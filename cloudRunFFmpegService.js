@@ -1,5 +1,5 @@
-// This file is meant to run INSIDE the GCP Cloud Run container (not in Base44/Deno Deploy)
-// Deploy this as a standalone Node.js service on GCP Cloud Run with FFmpeg installed
+// This file is meant to run INSIDE the Railway container (not in Base44/Deno Deploy)
+// Deploy this as a standalone Node.js service on Railway with FFmpeg installed
 
 const express = require('express');
 const { spawn } = require('child_process');
@@ -115,7 +115,6 @@ app.post('/merge-video', async (req, res) => {
       metadata: { contentType: 'video/mp4' }
     });
 
-    await file.makePublic();
     const publicUrl = `https://storage.googleapis.com/${bucketName}/${gcsFileName}`;
 
     console.log('Upload complete');
