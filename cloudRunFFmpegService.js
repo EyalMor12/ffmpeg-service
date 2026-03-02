@@ -72,16 +72,14 @@ app.post('/merge-video', async (req, res) => {
         .on('error', reject);
     });
 
-    console.log('Files downloaded, starting FFmpeg merge with audio ducking...');
+    console.log('Files downloaded, starting FFmpeg merge...');
 
     await new Promise((resolve, reject) => {
       const ffmpeg = spawn('ffmpeg', [
         '-i', videoPath,
         '-i', audioPath,
-        '-filter_complex',
-        '[0:a]volume=0.4[orig];[1:a]volume=1.5[rec];[orig][rec]amix=inputs=2:duration=first[aout]',
         '-map', '0:v',
-        '-map', '[aout]',
+        '-map', '1:a',
         '-c:v', 'copy',
         '-c:a', 'aac',
         '-b:a', '128k',
@@ -114,38 +112,9 @@ app.post('/merge-video', async (req, res) => {
     const file = bucket.file(gcsFileName);
 
     await file.save(fs.readFileSync(outputPath), {
-      metadata: { contentType: 'video/mp4' }
+      metadata: { contentType: 'video/mp4' },
+      public: true
     });
 
     const publicUrl = `https://storage.googleapis.com/${bucketName}/${gcsFileName}`;
     console.log('Upload complete:', publicUrl);
-
-    // Cleanup temp files
-    [videoPath, audioPath, outputPath].forEach(p => {
-      try { fs.unlinkSync(p); } catch (e) {}
-    });
-
-    // Notify callback
-    if (callbackUrl) {
-      try {
-        console.log(`Calling callback: ${callbackUrl}`);
-        await axios.post(callbackUrl, { playlistId, video_url: publicUrl });
-        console.log('Callback notified successfully');
-      } catch (e) {
-        console.error('Callback notification failed:', e.message);
-      }
-    }
-
-  } catch (error) {
-    console.error('Error during background processing:', error);
-
-    [videoPath, audioPath, outputPath].forEach(p => {
-      try { fs.unlinkSync(p); } catch (e) { }
-    });
-  }
-});
-
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
-  console.log(`Cloud Run FFmpeg Service listening on port ${PORT}`);
-});
