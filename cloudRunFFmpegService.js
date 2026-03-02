@@ -19,6 +19,7 @@ console.log('GCS_BUCKET_NAME:', process.env.GCS_BUCKET_NAME || 'NOT SET ✗');
 let storage;
 
 if (process.env.GCP_CREDS_BASE64) {
+  console.log('Initializing Storage with inline credentials from GCP_CREDS_BASE64...');
   const credJson = Buffer.from(process.env.GCP_CREDS_BASE64, 'base64').toString('utf-8');
   const credentials = JSON.parse(credJson);
   storage = new Storage({
@@ -43,7 +44,7 @@ app.post('/merge-video', async (req, res) => {
   const audioPath = path.join(tempDir, `audio_${playlistId}.m4a`);
   const outputPath = path.join(tempDir, `merged_${playlistId}.mp4`);
 
-  // Respond immediately so the caller doesn't time out
+  // Respond immediately — fire and forget
   res.json({ success: true, status: 'processing', playlistId });
 
   try {
@@ -58,7 +59,6 @@ app.post('/merge-video', async (req, res) => {
       videoRes.data.pipe(fs.createWriteStream(videoPath))
         .on('finish', resolve).on('error', reject);
     });
-
     await new Promise((resolve, reject) => {
       audioRes.data.pipe(fs.createWriteStream(audioPath))
         .on('finish', resolve).on('error', reject);
@@ -79,7 +79,6 @@ app.post('/merge-video', async (req, res) => {
         '-y',
         outputPath
       ]);
-
       ffmpeg.stderr.on('data', (data) => console.log(`FFmpeg: ${data}`));
       ffmpeg.on('close', (code) => {
         if (code === 0) { console.log('FFmpeg merge completed'); resolve(); }
@@ -95,19 +94,17 @@ app.post('/merge-video', async (req, res) => {
     const file = bucket.file(gcsFileName);
 
     await file.save(fs.readFileSync(outputPath), {
-      metadata: { contentType: 'video/mp4' }
+      metadata: { contentType: 'video/mp4' },
+      public: true
     });
 
-    await file.makePublic();
     const publicUrl = `https://storage.googleapis.com/${bucketName}/${gcsFileName}`;
     console.log('Upload complete:', publicUrl);
 
-    // Cleanup
     [videoPath, audioPath, outputPath].forEach(p => {
       try { fs.unlinkSync(p); } catch (e) {}
     });
 
-    // Notify callback
     if (callbackUrl) {
       console.log(`Calling callback: ${callbackUrl}`);
       await axios.post(callbackUrl, { playlistId, video_url: publicUrl });
