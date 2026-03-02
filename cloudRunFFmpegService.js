@@ -35,7 +35,7 @@ if (process.env.GCP_CREDS_BASE64) {
 }
 
 app.post('/merge-video', async (req, res) => {
-  const { videoUrl, audioUrl, playlistId, bucketName } = req.body;
+  const { videoUrl, audioUrl, playlistId, bucketName, callbackUrl } = req.body;
 
   if (!videoUrl || !audioUrl || !playlistId || !bucketName) {
     return res.status(400).json({ error: 'Missing required parameters' });
@@ -115,14 +115,26 @@ app.post('/merge-video', async (req, res) => {
       metadata: { contentType: 'video/mp4' }
     });
 
+    await file.makePublic();
     const publicUrl = `https://storage.googleapis.com/${bucketName}/${gcsFileName}`;
 
     console.log('Upload complete');
 
     // Cleanup temp files
-    fs.unlinkSync(videoPath);
-    fs.unlinkSync(audioPath);
-    fs.unlinkSync(outputPath);
+    [videoPath, audioPath, outputPath].forEach(p => {
+      try { fs.unlinkSync(p); } catch (e) {}
+    });
+
+    // Notify callback if provided
+    if (callbackUrl) {
+      try {
+        console.log(`Calling callback: ${callbackUrl}`);
+        await axios.post(callbackUrl, { playlistId, video_url: publicUrl });
+        console.log('Callback notified successfully');
+      } catch (e) {
+        console.error('Callback notification failed:', e.message);
+      }
+    }
 
     res.json({
       success: true,
@@ -140,4 +152,9 @@ app.post('/merge-video', async (req, res) => {
 
     res.status(500).json({ error: error.message });
   }
+});
+
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, () => {
+  console.log(`Cloud Run FFmpeg Service listening on port ${PORT}`);
 });
