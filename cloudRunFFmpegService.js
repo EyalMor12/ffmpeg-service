@@ -141,8 +141,3 @@ app.post('/merge-video', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
-  console.log(`Cloud Run FFmpeg Service listening on port ${PORT}`);
-});
