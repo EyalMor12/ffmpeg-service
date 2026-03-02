@@ -19,7 +19,6 @@ console.log('GCS_BUCKET_NAME:', process.env.GCS_BUCKET_NAME || 'NOT SET ✗');
 let storage;
 
 if (process.env.GCP_CREDS_BASE64) {
-  console.log('Initializing Storage with inline credentials from GCP_CREDS_BASE64...');
   const credJson = Buffer.from(process.env.GCP_CREDS_BASE64, 'base64').toString('utf-8');
   const credentials = JSON.parse(credJson);
   storage = new Storage({
@@ -29,9 +28,7 @@ if (process.env.GCP_CREDS_BASE64) {
   console.log('Google Cloud Storage client initialized successfully.');
 } else {
   console.warn('GCP_CREDS_BASE64 is not set. Falling back to default credentials.');
-  storage = new Storage({
-    projectId: process.env.GCP_PROJECT_ID
-  });
+  storage = new Storage({ projectId: process.env.GCP_PROJECT_ID });
 }
 
 app.post('/merge-video', async (req, res) => {
@@ -46,34 +43,29 @@ app.post('/merge-video', async (req, res) => {
   const audioPath = path.join(tempDir, `audio_${playlistId}.m4a`);
   const outputPath = path.join(tempDir, `merged_${playlistId}.mp4`);
 
+  // Respond immediately so the caller doesn't time out
+  res.json({ success: true, status: 'processing', playlistId });
+
   try {
     console.log(`Starting merge for playlist ${playlistId}`);
 
-    // Download video and audio
-    console.log('Downloading video and audio files...');
     const [videoRes, audioRes] = await Promise.all([
       axios.get(videoUrl, { responseType: 'stream' }),
       axios.get(audioUrl, { responseType: 'stream' })
     ]);
 
-    // Save files to temp directory
     await new Promise((resolve, reject) => {
       videoRes.data.pipe(fs.createWriteStream(videoPath))
-        .on('finish', resolve)
-        .on('error', reject);
+        .on('finish', resolve).on('error', reject);
     });
 
     await new Promise((resolve, reject) => {
       audioRes.data.pipe(fs.createWriteStream(audioPath))
-        .on('finish', resolve)
-        .on('error', reject);
+        .on('finish', resolve).on('error', reject);
     });
 
     console.log('Files downloaded, starting FFmpeg merge...');
 
-    // Run FFmpeg to merge video and audio
-    // -map 0:v = video stream from input 0 (video file)
-    // -map 1:a = audio stream from input 1 (commentary) — ignores original video audio
     await new Promise((resolve, reject) => {
       const ffmpeg = spawn('ffmpeg', [
         '-i', videoPath,
@@ -88,23 +80,14 @@ app.post('/merge-video', async (req, res) => {
         outputPath
       ]);
 
-      ffmpeg.stderr.on('data', (data) => {
-        console.log(`FFmpeg: ${data}`);
-      });
-
+      ffmpeg.stderr.on('data', (data) => console.log(`FFmpeg: ${data}`));
       ffmpeg.on('close', (code) => {
-        if (code === 0) {
-          console.log('FFmpeg merge completed successfully');
-          resolve();
-        } else {
-          reject(new Error(`FFmpeg exited with code ${code}`));
-        }
+        if (code === 0) { console.log('FFmpeg merge completed'); resolve(); }
+        else reject(new Error(`FFmpeg exited with code ${code}`));
       });
-
       ffmpeg.on('error', reject);
     });
 
-    // Upload merged video to GCS
     console.log('Uploading merged video to GCS...');
     const bucket = storage.bucket(bucketName);
     const timestamp = Date.now();
@@ -117,44 +100,29 @@ app.post('/merge-video', async (req, res) => {
 
     await file.makePublic();
     const publicUrl = `https://storage.googleapis.com/${bucketName}/${gcsFileName}`;
+    console.log('Upload complete:', publicUrl);
 
-    console.log('Upload complete');
-
-    // Cleanup temp files
+    // Cleanup
     [videoPath, audioPath, outputPath].forEach(p => {
       try { fs.unlinkSync(p); } catch (e) {}
     });
 
-    // Notify callback if provided
+    // Notify callback
     if (callbackUrl) {
-      try {
-        console.log(`Calling callback: ${callbackUrl}`);
-        await axios.post(callbackUrl, { playlistId, video_url: publicUrl });
-        console.log('Callback notified successfully');
-      } catch (e) {
-        console.error('Callback notification failed:', e.message);
-      }
+      console.log(`Calling callback: ${callbackUrl}`);
+      await axios.post(callbackUrl, { playlistId, video_url: publicUrl });
+      console.log('Callback notified successfully');
     }
-
-    res.json({
-      success: true,
-      video_url: publicUrl,
-      playlistId
-    });
 
   } catch (error) {
     console.error('Error during processing:', error);
-
-    // Cleanup on error
     [videoPath, audioPath, outputPath].forEach(p => {
-      try { fs.unlinkSync(p); } catch (e) { }
+      try { fs.unlinkSync(p); } catch (e) {}
     });
-
-    res.status(500).json({ error: error.message });
   }
 });
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
-  console.log(`Cloud Run FFmpeg Service listening on port ${PORT}`);
+  console.log(`FFmpeg Service listening on port ${PORT}`);
 });
