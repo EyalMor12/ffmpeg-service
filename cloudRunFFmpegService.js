@@ -11,10 +11,42 @@ const { Storage } = require('@google-cloud/storage');
 const app = express();
 app.use(express.json());
 
-const storage = new Storage({
-  projectId: process.env.GCP_PROJECT_ID,
-  keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS
-});
+// --- Start of added diagnostic logging and direct credential passing ---
+console.log('=== SERVICE STARTUP ===');
+console.log('Environment Variables at startup:');
+for (const key in process.env) {
+  if (process.env.hasOwnProperty(key)) {
+    // Log sensitive variables without their full value, or mask them
+    if (key.includes('KEY') || key.includes('SECRET') || key.includes('CREDS')) {
+      console.log(`- ${key}: [SET - value not displayed for security]`);
+    } else {
+      console.log(`- ${key}: ${process.env[key]}`);
+    }
+  }
+}
+
+let storage;
+if (process.env.GCP_CREDS_BASE64) {
+  console.log('GCP_CREDS_BASE64 is set. Initializing Storage with direct credentials.');
+  try {
+    const credentials = JSON.parse(Buffer.from(process.env.GCP_CREDS_BASE64, 'base64').toString('utf-8'));
+    storage = new Storage({
+      projectId: process.env.GCP_PROJECT_ID,
+      credentials: credentials
+    });
+    console.log('Google Cloud Storage client initialized successfully with direct credentials.');
+  } catch (e) {
+    console.error('ERROR: Failed to parse GCP_CREDS_BASE64 or initialize Storage:', e.message);
+    // Fallback or exit if critical
+    storage = new Storage({ projectId: process.env.GCP_PROJECT_ID }); // Fallback to default, which might fail
+  }
+} else {
+  console.warn('GCP_CREDS_BASE64 is NOT set. Initializing Storage with default credentials (may fail).');
+  storage = new Storage({
+    projectId: process.env.GCP_PROJECT_ID
+  });
+}
+// --- End of added diagnostic logging and direct credential passing ---
 
 app.post('/merge-video', async (req, res) => {
   const { videoUrl, audioUrl, playlistId, bucketName } = req.body;
