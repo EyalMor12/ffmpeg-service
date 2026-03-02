@@ -77,8 +77,7 @@ app.post('/merge-video', async (req, res) => {
     const file = bucket.file(gcsFileName);
 
     await file.save(fs.readFileSync(outputPath), {
-      metadata: { contentType: 'video/mp4' },
-      public: true
+      metadata: { contentType: 'video/mp4' }
     });
 
     const publicUrl = `https://storage.googleapis.com/${bucketName}/${gcsFileName}`;
@@ -104,3 +103,4 @@ app.post('/merge-video', async (req, res) => {
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => console.log(`FFmpeg Service listening on port ${PORT}`));
+
