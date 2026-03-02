@@ -11,12 +11,10 @@ const { Storage } = require('@google-cloud/storage');
 const app = express();
 app.use(express.json());
 
-// --- Start of added diagnostic logging and direct credential passing ---
 console.log('=== SERVICE STARTUP ===');
 console.log('Environment Variables at startup:');
 for (const key in process.env) {
   if (process.env.hasOwnProperty(key)) {
-    // Log sensitive variables without their full value, or mask them
     if (key.includes('KEY') || key.includes('SECRET') || key.includes('CREDS')) {
       console.log(`- ${key}: [SET - value not displayed for security]`);
     } else {
@@ -37,8 +35,7 @@ if (process.env.GCP_CREDS_BASE64) {
     console.log('Google Cloud Storage client initialized successfully with direct credentials.');
   } catch (e) {
     console.error('ERROR: Failed to parse GCP_CREDS_BASE64 or initialize Storage:', e.message);
-    // Fallback or exit if critical
-    storage = new Storage({ projectId: process.env.GCP_PROJECT_ID }); // Fallback to default, which might fail
+    storage = new Storage({ projectId: process.env.GCP_PROJECT_ID });
   }
 } else {
   console.warn('GCP_CREDS_BASE64 is NOT set. Initializing Storage with default credentials (may fail).');
@@ -46,7 +43,6 @@ if (process.env.GCP_CREDS_BASE64) {
     projectId: process.env.GCP_PROJECT_ID
   });
 }
-// --- End of added diagnostic logging and direct credential passing ---
 
 app.post('/merge-video', async (req, res) => {
   const { videoUrl, audioUrl, playlistId, bucketName } = req.body;
@@ -63,14 +59,12 @@ app.post('/merge-video', async (req, res) => {
   try {
     console.log(`Starting merge for playlist ${playlistId}`);
 
-    // Download video and audio
     console.log('Downloading video and audio files...');
     const [videoRes, audioRes] = await Promise.all([
       axios.get(videoUrl, { responseType: 'stream' }),
       axios.get(audioUrl, { responseType: 'stream' })
     ]);
 
-    // Save files to temp directory
     await new Promise((resolve, reject) => {
       videoRes.data.pipe(fs.createWriteStream(videoPath))
         .on('finish', resolve)
@@ -85,7 +79,6 @@ app.post('/merge-video', async (req, res) => {
 
     console.log('Files downloaded, starting FFmpeg merge...');
 
-    // Run FFmpeg to merge video and audio
     await new Promise((resolve, reject) => {
       const ffmpeg = spawn('ffmpeg', [
         '-i', videoPath,
@@ -93,7 +86,6 @@ app.post('/merge-video', async (req, res) => {
         '-c:v', 'copy',
         '-c:a', 'aac',
         '-b:a', '128k',
-        '-shortest',
         '-y',
         outputPath
       ]);
@@ -114,7 +106,6 @@ app.post('/merge-video', async (req, res) => {
       ffmpeg.on('error', reject);
     });
 
-    // Upload merged video to GCS
     console.log('Uploading merged video to GCS...');
     const bucket = storage.bucket(bucketName);
     const timestamp = Date.now();
@@ -125,12 +116,10 @@ app.post('/merge-video', async (req, res) => {
       metadata: { contentType: 'video/mp4' }
     });
 
-    // Removed: await file.makePublic();
     const publicUrl = `https://storage.googleapis.com/${bucketName}/${gcsFileName}`;
 
     console.log('Upload complete');
 
-    // Cleanup temp files
     fs.unlinkSync(videoPath);
     fs.unlinkSync(audioPath);
     fs.unlinkSync(outputPath);
@@ -144,7 +133,6 @@ app.post('/merge-video', async (req, res) => {
   } catch (error) {
     console.error('Error during processing:', error);
 
-    // Cleanup on error
     [videoPath, audioPath, outputPath].forEach(p => {
       try { fs.unlinkSync(p); } catch (e) { }
     });
