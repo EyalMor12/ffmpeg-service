@@ -125,7 +125,7 @@ app.post('/merge-video', async (req, res) => {
       metadata: { contentType: 'video/mp4' }
     });
 
-    await file.makePublic();
+    // Removed: await file.makePublic();
     const publicUrl = `https://storage.googleapis.com/${bucketName}/${gcsFileName}`;
 
     console.log('Upload complete');
@@ -156,4 +156,4 @@ app.post('/merge-video', async (req, res) => {
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log(`Cloud Run FFmpeg Service listening on port ${PORT}`);
-});
+})
