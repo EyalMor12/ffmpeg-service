@@ -78,11 +78,13 @@ app.post('/merge-video', async (req, res) => {
       const ffmpeg = spawn('ffmpeg', [
         '-i', videoPath,
         '-i', audioPath,
+        '-filter_complex',
+        '[1:a]volume=1.5[commentary_amped];[0:a][1:a]sidechaincompress=threshold=0.01:ratio=10:attack=10:release=100:detection=peak[video_audio_ducked];[video_audio_ducked][commentary_amped]amerge=inputs=2[a_out]',
         '-map', '0:v',
-        '-map', '1:a',
+        '-map', '[a_out]',
         '-c:v', 'copy',
         '-c:a', 'aac',
-        '-b:a', '128k',
+        '-b:a', '192k',
         '-shortest',
         '-y',
         outputPath
