@@ -112,8 +112,7 @@ app.post('/merge-video', async (req, res) => {
     const file = bucket.file(gcsFileName);
 
     await file.save(fs.readFileSync(outputPath), {
-      metadata: { contentType: 'video/mp4' },
-      public: true
+      metadata: { contentType: 'video/mp4' }
     });
 
     const publicUrl = `https://storage.googleapis.com/${bucketName}/${gcsFileName}`;
