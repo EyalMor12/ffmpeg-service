@@ -79,7 +79,7 @@ app.post('/merge-video', async (req, res) => {
         '-i', videoPath,
         '-i', audioPath,
         '-filter_complex',
-        '[0:a]sidechaincompress=threshold=0.003:ratio=4:attack=5:release=50:makeup=5[compressed];[compressed][1:a]amerge=inputs=2,pan=stereo|c0<c0+c2|c1<c1+c2[a_out]',
+        '[0:a]volume=0.4[vid_a];[1:a]volume=1.5[rec_a];[vid_a][rec_a]amerge=inputs=2,pan=stereo|c0<c0+c2|c1<c1+c2[a_out]',
         '-map', '0:v',
         '-map', '[a_out]',
         '-c:v', 'copy',
