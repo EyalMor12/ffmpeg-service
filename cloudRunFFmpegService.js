@@ -155,7 +155,7 @@ async function createSlideFromImage(imageUrl, outputPath, durationSecs, slideInd
     const ff = spawn('ffmpeg', [
       '-loop', '1',
       '-i', imagePath,
-      '-f', 'lavfi', '-i', `aevalsrc=0:c=stereo:r=44100:duration=${durationSecs}`,
+      '-f', 'lavfi', '-i', `anullsrc=channel_layout=stereo:sample_rate=44100`,
       '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
       '-vf', 'scale=1920:1080,format=yuv420p',
       '-r', '30',
