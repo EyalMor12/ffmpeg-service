@@ -210,7 +210,6 @@ app.post('/concat-clips', async (req, res) => {
     console.log(`[concat-clips] Starting for playlist ${playlistId} with ${clipUrls.length} clips, slideSeconds=${slideSeconds}`);
 
     // Download all clips
-    clipPaths = [];
     for (let i = 0; i < clipUrls.length; i++) {
       const clipPath = path.join(tempDir, `clip_${playlistId}_${i}.mp4`);
       console.log(`Downloading clip ${i + 1}/${clipUrls.length}...`);
