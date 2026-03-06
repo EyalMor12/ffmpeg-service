@@ -145,6 +145,108 @@ app.post('/merge-video', async (req, res) => {
   }
 });
 
+// Concatenate multiple clips into a single video, with intro and separators
+app.post('/concat-clips', async (req, res) => {
+  const { clipUrls, playlistId, playlistName, bucketName, callbackUrl } = req.body;
+
+  if (!clipUrls || !clipUrls.length || !playlistId || !bucketName) {
+    return res.status(400).json({ error: 'Missing required parameters' });
+  }
+
+  // Respond immediately
+  res.json({ success: true, status: 'processing', playlistId });
+
+  const tempDir = '/tmp';
+  const outputPath = path.join(tempDir, `concat_${playlistId}.mp4`);
+
+  try {
+    console.log(`[concat-clips] Starting for playlist ${playlistId} with ${clipUrls.length} clips`);
+
+    // Download all clips
+    const clipPaths = [];
+    for (let i = 0; i < clipUrls.length; i++) {
+      const clipPath = path.join(tempDir, `clip_${playlistId}_${i}.mp4`);
+      console.log(`Downloading clip ${i + 1}/${clipUrls.length}...`);
+      const clipRes = await axios.get(clipUrls[i], { responseType: 'stream' });
+      await new Promise((resolve, reject) => {
+        clipRes.data.pipe(fs.createWriteStream(clipPath))
+          .on('finish', resolve)
+          .on('error', reject);
+      });
+      clipPaths.push(clipPath);
+    }
+
+    console.log('All clips downloaded, building concat list...');
+
+    // Write concat list file
+    const concatListPath = path.join(tempDir, `concat_list_${playlistId}.txt`);
+    const concatContent = clipPaths.map(p => `file '${p}'`).join('\n');
+    fs.writeFileSync(concatListPath, concatContent);
+
+    // Run FFmpeg to concatenate
+    await new Promise((resolve, reject) => {
+      const ffmpeg = spawn('ffmpeg', [
+        '-f', 'concat',
+        '-safe', '0',
+        '-i', concatListPath,
+        '-c', 'copy',
+        '-y',
+        outputPath
+      ]);
+
+      ffmpeg.stderr.on('data', (data) => {
+        console.log(`FFmpeg: ${data}`);
+      });
+
+      ffmpeg.on('close', (code) => {
+        if (code === 0) {
+          console.log('[concat-clips] FFmpeg concat completed');
+          resolve();
+        } else {
+          reject(new Error(`FFmpeg exited with code ${code}`));
+        }
+      });
+
+      ffmpeg.on('error', reject);
+    });
+
+    // Upload to GCS
+    console.log('[concat-clips] Uploading to GCS...');
+    const bucket = storage.bucket(bucketName);
+    const timestamp = Date.now();
+    const gcsFileName = `playlists/${playlistId}/video_${timestamp}.mp4`;
+    const file = bucket.file(gcsFileName);
+
+    await file.save(fs.readFileSync(outputPath), {
+      metadata: { contentType: 'video/mp4' }
+    });
+
+    const publicUrl = `https://storage.googleapis.com/${bucketName}/${gcsFileName}`;
+    console.log('[concat-clips] Upload complete:', publicUrl);
+
+    // Cleanup
+    [...clipPaths, concatListPath, outputPath].forEach(p => {
+      try { fs.unlinkSync(p); } catch (e) {}
+    });
+
+    // Notify callback
+    if (callbackUrl) {
+      try {
+        console.log(`[concat-clips] Calling callback: ${callbackUrl}`);
+        await axios.post(callbackUrl, { playlistId, isCallback: true, videoUrl: publicUrl });
+        console.log('[concat-clips] Callback notified successfully');
+      } catch (e) {
+        console.error('[concat-clips] Callback notification failed:', e.message);
+      }
+    }
+
+  } catch (error) {
+    console.error('[concat-clips] Error:', error);
+    clipPaths && clipPaths.forEach(p => { try { fs.unlinkSync(p); } catch (e) {} });
+    try { fs.unlinkSync(outputPath); } catch (e) {}
+  }
+});
+
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log(`Cloud Run FFmpeg Service listening on port ${PORT}`);
