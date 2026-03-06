@@ -145,60 +145,53 @@ app.post('/merge-video', async (req, res) => {
   }
 });
 
-// Helper: create a text slide video using FFmpeg drawtext
-// Text rendering matches the UI: black background, white text, Arial/sans-serif, centered, line-wrapping via \n
-async function createTextSlide(text, outputPath, durationSecs, playlistId, slideIndex) {
-  const lines = String(text || '').split('\n').filter(l => l.trim() !== '');
-  const VIDEO_W = 1920;
-  const VIDEO_H = 1080;
-  const FONT_SIZE = 72;
-  const LINE_SPACING = 100; // px between lines
-
-  // Build drawtext filters for each line, centered vertically as a block
-  const totalTextHeight = lines.length * LINE_SPACING;
-  const startY = (VIDEO_H - totalTextHeight) / 2;
-
-  const drawtextFilters = lines.map((line, i) => {
-    const escapedText = line
-      .replace(/\\/g, '\\\\')
-      .replace(/'/g, "\\'")
-      .replace(/:/g, '\\:');
-    const y = Math.round(startY + i * LINE_SPACING);
-    return `drawtext=text='${escapedText}':fontsize=${FONT_SIZE}:fontcolor=white:x=(w-text_w)/2:y=${y}:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf`;
-  });
-
-  // If no text, just blank black
-  const vfArg = drawtextFilters.length > 0 ? drawtextFilters.join(',') : 'null';
+// Helper: create a video slide from a pre-rendered PNG image URL
+async function createSlideFromImage(imageUrl, outputPath, durationSecs, slideIndex) {
+  const imagePath = outputPath.replace('.mp4', '.png');
+  const imageRes = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+  fs.writeFileSync(imagePath, Buffer.from(imageRes.data));
 
   return new Promise((resolve, reject) => {
-    const ffmpegArgs = [
-      '-f', 'lavfi',
-      '-i', `color=c=black:size=${VIDEO_W}x${VIDEO_H}:rate=30:duration=${durationSecs}`,
-      '-f', 'lavfi',
-      '-i', `aevalsrc=0:c=stereo:r=44100:duration=${durationSecs}`,
-      '-vf', vfArg,
-      '-c:v', 'libx264',
-      '-preset', 'ultrafast',
-      '-crf', '23',
-      '-c:a', 'aac',
-      '-b:a', '128k',
-      '-y',
-      outputPath
-    ];
-
-    const ffmpeg = spawn('ffmpeg', ffmpegArgs);
-    ffmpeg.stderr.on('data', d => console.log(`[slide-${slideIndex}] FFmpeg: ${d}`));
-    ffmpeg.on('close', code => {
+    const ff = spawn('ffmpeg', [
+      '-loop', '1',
+      '-i', imagePath,
+      '-f', 'lavfi', '-i', `aevalsrc=0:c=stereo:r=44100:duration=${durationSecs}`,
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
+      '-vf', 'scale=1920:1080',
+      '-r', '30',
+      '-c:a', 'aac', '-b:a', '128k',
+      '-t', String(durationSecs),
+      '-y', outputPath
+    ]);
+    ff.stderr.on('data', d => console.log(`[slide-${slideIndex}] FFmpeg: ${d}`));
+    ff.on('close', code => {
+      try { fs.unlinkSync(imagePath); } catch (e) {}
       if (code === 0) resolve();
-      else reject(new Error(`FFmpeg slide exited with code ${code}`));
+      else reject(new Error(`FFmpeg slide from image exited with code ${code}`));
     });
-    ffmpeg.on('error', reject);
+    ff.on('error', reject);
+  });
+}
+
+// Fallback: blank black slide (no image provided)
+async function createBlankSlide(outputPath, durationSecs, slideIndex) {
+  return new Promise((resolve, reject) => {
+    const ff = spawn('ffmpeg', [
+      '-f', 'lavfi', '-i', `color=c=black:size=1920x1080:rate=30:duration=${durationSecs}`,
+      '-f', 'lavfi', '-i', `aevalsrc=0:c=stereo:r=44100:duration=${durationSecs}`,
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
+      '-c:a', 'aac', '-b:a', '128k',
+      '-y', outputPath
+    ]);
+    ff.stderr.on('data', d => console.log(`[blank-slide-${slideIndex}] FFmpeg: ${d}`));
+    ff.on('close', code => code === 0 ? resolve() : reject(new Error(`Blank slide failed: ${code}`)));
+    ff.on('error', reject);
   });
 }
 
 // Concatenate multiple clips into a single video, with intro and separators
 app.post('/concat-clips', async (req, res) => {
-  const { clipUrls, playlistId, playlistName, bucketName, callbackUrl, slideDuration, introText, eventTexts } = req.body;
+  const { clipUrls, playlistId, playlistName, bucketName, callbackUrl, slideDuration, slideImageUrls } = req.body;
 
   if (!clipUrls || !clipUrls.length || !playlistId || !bucketName) {
     return res.status(400).json({ error: 'Missing required parameters' });
@@ -211,12 +204,13 @@ app.post('/concat-clips', async (req, res) => {
 
   const tempDir = '/tmp';
   const outputPath = path.join(tempDir, `concat_${playlistId}.mp4`);
+  const clipPaths = [];
 
   try {
     console.log(`[concat-clips] Starting for playlist ${playlistId} with ${clipUrls.length} clips, slideSeconds=${slideSeconds}`);
 
     // Download all clips
-    const clipPaths = [];
+    clipPaths = [];
     for (let i = 0; i < clipUrls.length; i++) {
       const clipPath = path.join(tempDir, `clip_${playlistId}_${i}.mp4`);
       console.log(`Downloading clip ${i + 1}/${clipUrls.length}...`);
@@ -256,17 +250,24 @@ app.post('/concat-clips', async (req, res) => {
       reEncodedPaths.push(reEncodedPath);
     }
 
-    // Create intro slide
-    console.log('[concat-clips] Creating intro slide...');
+    // Create slides from pre-rendered PNGs (slideImageUrls[0] = intro, [1..n] = separators)
+    console.log('[concat-clips] Creating slides from pre-rendered images...');
     const introSlidePath = path.join(tempDir, `slide_intro_${playlistId}.mp4`);
-    await createTextSlide(introText || playlistName || '', introSlidePath, slideSeconds, playlistId, 'intro');
+    if (slideImageUrls && slideImageUrls[0]) {
+      await createSlideFromImage(slideImageUrls[0], introSlidePath, slideSeconds, 'intro');
+    } else {
+      await createBlankSlide(introSlidePath, slideSeconds, 'intro');
+    }
 
-    // Create separator slides (one per clip)
     const separatorPaths = [];
     for (let i = 0; i < clipUrls.length; i++) {
       const sepPath = path.join(tempDir, `slide_sep_${playlistId}_${i}.mp4`);
-      const sepText = (eventTexts && eventTexts[i]) ? eventTexts[i] : '';
-      await createTextSlide(sepText, sepPath, slideSeconds, playlistId, `sep_${i}`);
+      const imgUrl = slideImageUrls && slideImageUrls[i + 1];
+      if (imgUrl) {
+        await createSlideFromImage(imgUrl, sepPath, slideSeconds, `sep_${i}`);
+      } else {
+        await createBlankSlide(sepPath, slideSeconds, `sep_${i}`);
+      }
       separatorPaths.push(sepPath);
     }
 
@@ -284,7 +285,7 @@ app.post('/concat-clips', async (req, res) => {
     const concatContent = allSegments.map(p => `file '${p}'`).join('\n');
     fs.writeFileSync(concatListPath, concatContent);
 
-    // Run FFmpeg to concatenate (all segments are already same format, use copy)
+    // Run FFmpeg to concatenate
     await new Promise((resolve, reject) => {
       const ffmpeg = spawn('ffmpeg', [
         '-f', 'concat',
@@ -294,20 +295,11 @@ app.post('/concat-clips', async (req, res) => {
         '-y',
         outputPath
       ]);
-
-      ffmpeg.stderr.on('data', (data) => {
-        console.log(`FFmpeg: ${data}`);
-      });
-
+      ffmpeg.stderr.on('data', (data) => console.log(`FFmpeg: ${data}`));
       ffmpeg.on('close', (code) => {
-        if (code === 0) {
-          console.log('[concat-clips] FFmpeg concat completed');
-          resolve();
-        } else {
-          reject(new Error(`FFmpeg exited with code ${code}`));
-        }
+        if (code === 0) { console.log('[concat-clips] FFmpeg concat completed'); resolve(); }
+        else reject(new Error(`FFmpeg exited with code ${code}`));
       });
-
       ffmpeg.on('error', reject);
     });
 
@@ -343,7 +335,7 @@ app.post('/concat-clips', async (req, res) => {
 
   } catch (error) {
     console.error('[concat-clips] Error:', error);
-    clipPaths && clipPaths.forEach(p => { try { fs.unlinkSync(p); } catch (e) {} });
+    clipPaths.forEach(p => { try { fs.unlinkSync(p); } catch (e) {} });
     try { fs.unlinkSync(outputPath); } catch (e) {}
   }
 });
