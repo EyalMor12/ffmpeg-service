@@ -157,10 +157,11 @@ async function createSlideFromImage(imageUrl, outputPath, durationSecs, slideInd
       '-i', imagePath,
       '-f', 'lavfi', '-i', `aevalsrc=0:c=stereo:r=44100:duration=${durationSecs}`,
       '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
-      '-vf', 'scale=1920:1080',
+      '-vf', 'scale=1920:1080,format=yuv420p',
       '-r', '30',
       '-c:a', 'aac', '-b:a', '128k',
       '-t', String(durationSecs),
+      '-shortest',
       '-y', outputPath
     ]);
     ff.stderr.on('data', d => console.log(`[slide-${slideIndex}] FFmpeg: ${d}`));
