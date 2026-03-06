@@ -145,13 +145,66 @@ app.post('/merge-video', async (req, res) => {
   }
 });
 
+// Helper: create a text slide video using FFmpeg drawtext
+// Text rendering matches the UI: black background, white text, Arial/sans-serif, centered, line-wrapping via \n
+async function createTextSlide(text, outputPath, durationSecs, playlistId, slideIndex) {
+  const lines = String(text || '').split('\n').filter(l => l.trim() !== '');
+  const VIDEO_W = 1920;
+  const VIDEO_H = 1080;
+  const FONT_SIZE = 72;
+  const LINE_SPACING = 100; // px between lines
+
+  // Build drawtext filters for each line, centered vertically as a block
+  const totalTextHeight = lines.length * LINE_SPACING;
+  const startY = (VIDEO_H - totalTextHeight) / 2;
+
+  const drawtextFilters = lines.map((line, i) => {
+    const escapedText = line
+      .replace(/\\/g, '\\\\')
+      .replace(/'/g, "\\'")
+      .replace(/:/g, '\\:');
+    const y = Math.round(startY + i * LINE_SPACING);
+    return `drawtext=text='${escapedText}':fontsize=${FONT_SIZE}:fontcolor=white:x=(w-text_w)/2:y=${y}:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf`;
+  });
+
+  // If no text, just blank black
+  const vfArg = drawtextFilters.length > 0 ? drawtextFilters.join(',') : 'null';
+
+  return new Promise((resolve, reject) => {
+    const ffmpegArgs = [
+      '-f', 'lavfi',
+      '-i', `color=c=black:size=${VIDEO_W}x${VIDEO_H}:rate=30:duration=${durationSecs}`,
+      '-f', 'lavfi',
+      '-i', `aevalsrc=0:c=stereo:r=44100:duration=${durationSecs}`,
+      '-vf', vfArg,
+      '-c:v', 'libx264',
+      '-preset', 'ultrafast',
+      '-crf', '23',
+      '-c:a', 'aac',
+      '-b:a', '128k',
+      '-y',
+      outputPath
+    ];
+
+    const ffmpeg = spawn('ffmpeg', ffmpegArgs);
+    ffmpeg.stderr.on('data', d => console.log(`[slide-${slideIndex}] FFmpeg: ${d}`));
+    ffmpeg.on('close', code => {
+      if (code === 0) resolve();
+      else reject(new Error(`FFmpeg slide exited with code ${code}`));
+    });
+    ffmpeg.on('error', reject);
+  });
+}
+
 // Concatenate multiple clips into a single video, with intro and separators
 app.post('/concat-clips', async (req, res) => {
-  const { clipUrls, playlistId, playlistName, bucketName, callbackUrl } = req.body;
+  const { clipUrls, playlistId, playlistName, bucketName, callbackUrl, slideDuration, introText, eventTexts } = req.body;
 
   if (!clipUrls || !clipUrls.length || !playlistId || !bucketName) {
     return res.status(400).json({ error: 'Missing required parameters' });
   }
+
+  const slideSeconds = parseInt(slideDuration || 2, 10) || 2;
 
   // Respond immediately
   res.json({ success: true, status: 'processing', playlistId });
@@ -160,7 +213,7 @@ app.post('/concat-clips', async (req, res) => {
   const outputPath = path.join(tempDir, `concat_${playlistId}.mp4`);
 
   try {
-    console.log(`[concat-clips] Starting for playlist ${playlistId} with ${clipUrls.length} clips`);
+    console.log(`[concat-clips] Starting for playlist ${playlistId} with ${clipUrls.length} clips, slideSeconds=${slideSeconds}`);
 
     // Download all clips
     const clipPaths = [];
@@ -176,14 +229,62 @@ app.post('/concat-clips', async (req, res) => {
       clipPaths.push(clipPath);
     }
 
-    console.log('All clips downloaded, building concat list...');
+    // Re-encode all clips to uniform format (1920x1080, 30fps, aac)
+    console.log('[concat-clips] Re-encoding clips to uniform format...');
+    const reEncodedPaths = [];
+    for (let i = 0; i < clipPaths.length; i++) {
+      const reEncodedPath = path.join(tempDir, `reenc_${playlistId}_${i}.mp4`);
+      await new Promise((resolve, reject) => {
+        const ff = spawn('ffmpeg', [
+          '-i', clipPaths[i],
+          '-vf', 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2',
+          '-r', '30',
+          '-c:v', 'libx264',
+          '-preset', 'ultrafast',
+          '-crf', '23',
+          '-c:a', 'aac',
+          '-b:a', '128k',
+          '-ar', '44100',
+          '-ac', '2',
+          '-y',
+          reEncodedPath
+        ]);
+        ff.stderr.on('data', d => console.log(`[reenc-${i}] ${d}`));
+        ff.on('close', code => code === 0 ? resolve() : reject(new Error(`Re-encode clip ${i} failed`)));
+        ff.on('error', reject);
+      });
+      reEncodedPaths.push(reEncodedPath);
+    }
+
+    // Create intro slide
+    console.log('[concat-clips] Creating intro slide...');
+    const introSlidePath = path.join(tempDir, `slide_intro_${playlistId}.mp4`);
+    await createTextSlide(introText || playlistName || '', introSlidePath, slideSeconds, playlistId, 'intro');
+
+    // Create separator slides (one per clip)
+    const separatorPaths = [];
+    for (let i = 0; i < clipUrls.length; i++) {
+      const sepPath = path.join(tempDir, `slide_sep_${playlistId}_${i}.mp4`);
+      const sepText = (eventTexts && eventTexts[i]) ? eventTexts[i] : '';
+      await createTextSlide(sepText, sepPath, slideSeconds, playlistId, `sep_${i}`);
+      separatorPaths.push(sepPath);
+    }
+
+    console.log('All slides created, building concat list...');
+
+    // Build ordered list: intro + (separator + clip) for each clip
+    const allSegments = [introSlidePath];
+    for (let i = 0; i < reEncodedPaths.length; i++) {
+      allSegments.push(separatorPaths[i]);
+      allSegments.push(reEncodedPaths[i]);
+    }
 
     // Write concat list file
     const concatListPath = path.join(tempDir, `concat_list_${playlistId}.txt`);
-    const concatContent = clipPaths.map(p => `file '${p}'`).join('\n');
+    const concatContent = allSegments.map(p => `file '${p}'`).join('\n');
     fs.writeFileSync(concatListPath, concatContent);
 
-    // Run FFmpeg to concatenate
+    // Run FFmpeg to concatenate (all segments are already same format, use copy)
     await new Promise((resolve, reject) => {
       const ffmpeg = spawn('ffmpeg', [
         '-f', 'concat',
