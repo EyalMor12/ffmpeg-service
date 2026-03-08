@@ -34,8 +34,20 @@ if (process.env.GCP_CREDS_BASE64) {
   });
 }
 
+// Delete a GCS file by its public URL
+async function deleteGcsFileByUrl(bucket, publicUrl) {
+  try {
+    const match = publicUrl && publicUrl.match(/https:\/\/storage\.googleapis\.com\/[^/]+\/(.+)/);
+    if (!match) return;
+    await bucket.file(match[1]).delete();
+    console.log(`Deleted old GCS file: ${match[1]}`);
+  } catch (e) {
+    console.warn(`Could not delete old GCS file: ${e.message}`);
+  }
+}
+
 app.post('/merge-video', async (req, res) => {
-  const { videoUrl, audioUrl, playlistId, bucketName, callbackUrl } = req.body;
+  const { videoUrl, audioUrl, playlistId, bucketName, callbackUrl, oldVideoUrl } = req.body;
 
   if (!videoUrl || !audioUrl || !playlistId || !bucketName) {
     return res.status(400).json({ error: 'Missing required parameters' });
@@ -109,6 +121,7 @@ app.post('/merge-video', async (req, res) => {
     // Upload merged video to GCS
     console.log('Uploading merged video to GCS...');
     const bucket = storage.bucket(bucketName);
+
     const timestamp = Date.now();
     const gcsFileName = `playlists/${playlistId}/merged_${timestamp}.mp4`;
     const file = bucket.file(gcsFileName);
@@ -119,6 +132,9 @@ app.post('/merge-video', async (req, res) => {
 
     const publicUrl = `https://storage.googleapis.com/${bucketName}/${gcsFileName}`;
     console.log('Upload complete:', publicUrl);
+
+    // Delete old concat video ONLY after successful upload
+    if (oldVideoUrl) await deleteGcsFileByUrl(bucket, oldVideoUrl);
 
     // Cleanup temp files
     [videoPath, audioPath, outputPath].forEach(p => {
@@ -178,21 +194,23 @@ async function createSlideFromImage(imageUrl, outputPath, durationSecs, slideInd
 async function createBlankSlide(outputPath, durationSecs, slideIndex) {
   return new Promise((resolve, reject) => {
     const ff = spawn('ffmpeg', [
-      '-f', 'lavfi', '-i', `color=c=black:size=1920x1080:rate=30:duration=${durationSecs}`,
-      '-f', 'lavfi', '-i', `aevalsrc=0:c=stereo:r=44100:duration=${durationSecs}`,
+      '-f', 'lavfi', '-i', `color=c=black:size=1920x1080:rate=30`,
+      '-f', 'lavfi', '-i', `anullsrc=channel_layout=stereo:sample_rate=44100`,
       '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
+      '-vf', 'format=yuv420p',
       '-c:a', 'aac', '-b:a', '128k',
+      '-t', String(durationSecs),
+      '-shortest',
       '-y', outputPath
     ]);
-    ff.stderr.on('data', d => console.log(`[blank-slide-${slideIndex}] FFmpeg: ${d}`));
-    ff.on('close', code => code === 0 ? resolve() : reject(new Error(`Blank slide failed: ${code}`)));
+    ff.on('close', code => code === 0 ? resolve() : reject(new Error(`Blank slide ${slideIndex} failed: ${code}`)));
     ff.on('error', reject);
   });
 }
 
 // Concatenate multiple clips into a single video, with intro and separators
 app.post('/concat-clips', async (req, res) => {
-  const { clipUrls, playlistId, playlistName, bucketName, callbackUrl, slideDuration, slideImageUrls } = req.body;
+  const { clipUrls, playlistId, playlistName, bucketName, callbackUrl, slideDuration, slideImageUrls, oldVideoUrl } = req.body;
 
   if (!clipUrls || !clipUrls.length || !playlistId || !bucketName) {
     return res.status(400).json({ error: 'Missing required parameters' });
@@ -306,6 +324,7 @@ app.post('/concat-clips', async (req, res) => {
     // Upload to GCS
     console.log('[concat-clips] Uploading to GCS...');
     const bucket = storage.bucket(bucketName);
+
     const timestamp = Date.now();
     const gcsFileName = `playlists/${playlistId}/video_${timestamp}.mp4`;
     const file = bucket.file(gcsFileName);
@@ -316,6 +335,9 @@ app.post('/concat-clips', async (req, res) => {
 
     const publicUrl = `https://storage.googleapis.com/${bucketName}/${gcsFileName}`;
     console.log('[concat-clips] Upload complete:', publicUrl);
+
+    // Delete old GCS files ONLY after successful upload
+    if (oldVideoUrl) await deleteGcsFileByUrl(bucket, oldVideoUrl);
 
     // Cleanup
     [...clipPaths, concatListPath, outputPath].forEach(p => {
