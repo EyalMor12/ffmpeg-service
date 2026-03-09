@@ -208,9 +208,32 @@ async function createBlankSlide(outputPath, durationSecs, slideIndex) {
   });
 }
 
+// Get clip duration using ffprobe (metadata only, no re-encoding)
+function getClipDuration(filePath) {
+  return new Promise((resolve, reject) => {
+    const ffprobe = spawn('ffprobe', [
+      '-v', 'quiet',
+      '-print_format', 'json',
+      '-show_format',
+      filePath
+    ]);
+    let output = '';
+    ffprobe.stdout.on('data', d => output += d);
+    ffprobe.on('close', code => {
+      if (code === 0) {
+        try {
+          const info = JSON.parse(output);
+          resolve(parseFloat(info.format.duration));
+        } catch (e) { reject(e); }
+      } else reject(new Error(`ffprobe failed with code ${code}`));
+    });
+    ffprobe.on('error', reject);
+  });
+}
+
 // Concatenate multiple clips into a single video, with intro and separators
 app.post('/concat-clips', async (req, res) => {
-  const { clipUrls, playlistId, playlistName, bucketName, callbackUrl, slideDuration, slideImageUrls, oldVideoUrl } = req.body;
+  const { clipUrls, clipDurations, playlistId, playlistName, bucketName, callbackUrl, slideDuration, slideImageUrls, oldVideoUrl } = req.body;
 
   if (!clipUrls || !clipUrls.length || !playlistId || !bucketName) {
     return res.status(400).json({ error: 'Missing required parameters' });
@@ -241,26 +264,40 @@ app.post('/concat-clips', async (req, res) => {
       clipPaths.push(clipPath);
     }
 
-    // Re-encode all clips to uniform format (1920x1080, 30fps, aac)
-    console.log('[concat-clips] Re-encoding clips to uniform format...');
+    // Re-encode all clips to uniform format (1920x1080, 30fps, aac) + 0.5s fadeout
+    console.log('[concat-clips] Re-encoding clips with fadeout...');
     const reEncodedPaths = [];
     for (let i = 0; i < clipPaths.length; i++) {
       const reEncodedPath = path.join(tempDir, `reenc_${playlistId}_${i}.mp4`);
+      const duration = clipDurations && clipDurations[i] ? parseFloat(clipDurations[i]) : null;
+      const fadeDuration = 0.5;
+      const fadeStart = duration && duration > fadeDuration ? duration - fadeDuration : null;
+
+      const vf = fadeStart !== null
+        ? `scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fade=t=out:st=${fadeStart}:d=${fadeDuration}`
+        : `scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2`;
+
+      const ffArgs = [
+        '-i', clipPaths[i],
+        '-vf', vf,
+        '-r', '30',
+        '-c:v', 'libx264',
+        '-preset', 'ultrafast',
+        '-crf', '23',
+        '-c:a', 'aac',
+        '-b:a', '128k',
+        '-ar', '44100',
+        '-ac', '2',
+      ];
+
+      if (fadeStart !== null) {
+        ffArgs.push('-af', `afade=t=out:st=${fadeStart}:d=${fadeDuration}`);
+      }
+
+      ffArgs.push('-y', reEncodedPath);
+
       await new Promise((resolve, reject) => {
-        const ff = spawn('ffmpeg', [
-          '-i', clipPaths[i],
-          '-vf', 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2',
-          '-r', '30',
-          '-c:v', 'libx264',
-          '-preset', 'ultrafast',
-          '-crf', '23',
-          '-c:a', 'aac',
-          '-b:a', '128k',
-          '-ar', '44100',
-          '-ac', '2',
-          '-y',
-          reEncodedPath
-        ]);
+        const ff = spawn('ffmpeg', ffArgs);
         ff.stderr.on('data', d => console.log(`[reenc-${i}] ${d}`));
         ff.on('close', code => code === 0 ? resolve() : reject(new Error(`Re-encode clip ${i} failed`)));
         ff.on('error', reject);
