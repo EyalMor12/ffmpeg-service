@@ -47,7 +47,7 @@ async function deleteGcsFileByUrl(bucket, publicUrl) {
 }
 
 app.post('/merge-video', async (req, res) => {
-  const { videoUrl, audioUrl, playlistId, bucketName, callbackUrl, oldVideoUrl } = req.body;
+  const { videoUrl, audioUrl, playlistId, bucketName, callbackUrl, oldVideoUrl, subtitlesUrl } = req.body;
 
   if (!videoUrl || !audioUrl || !playlistId || !bucketName) {
     return res.status(400).json({ error: 'Missing required parameters' });
@@ -60,17 +60,22 @@ app.post('/merge-video', async (req, res) => {
   const tempDir = '/tmp';
   const videoPath = path.join(tempDir, `video_${playlistId}.mp4`);
   const audioPath = path.join(tempDir, `audio_${playlistId}.m4a`);
+  const subtitlesPath = path.join(tempDir, `subtitles_${playlistId}.srt`);
   const outputPath = path.join(tempDir, `merged_${playlistId}.mp4`);
 
   try {
     console.log(`Starting merge for playlist ${playlistId}`);
 
-    // Download video and audio
+    // Download video and audio (and subtitles if provided)
     console.log('Downloading video and audio files...');
-    const [videoRes, audioRes] = await Promise.all([
+    const downloads = [
       axios.get(videoUrl, { responseType: 'stream' }),
       axios.get(audioUrl, { responseType: 'stream' })
-    ]);
+    ];
+    if (subtitlesUrl) {
+      downloads.push(axios.get(subtitlesUrl, { responseType: 'stream' }));
+    }
+    const [videoRes, audioRes, subtitlesRes] = await Promise.all(downloads);
 
     await new Promise((resolve, reject) => {
       videoRes.data.pipe(fs.createWriteStream(videoPath))
@@ -84,23 +89,39 @@ app.post('/merge-video', async (req, res) => {
         .on('error', reject);
     });
 
+    if (subtitlesRes) {
+      await new Promise((resolve, reject) => {
+        subtitlesRes.data.pipe(fs.createWriteStream(subtitlesPath))
+          .on('finish', resolve)
+          .on('error', reject);
+      });
+      console.log('Subtitles downloaded:', subtitlesPath);
+    }
+
     console.log('Files downloaded, starting FFmpeg merge...');
 
+    // Subtitle style (matching Preview appearance)
+    const subtitleStyle = subtitlesUrl
+      ? `subtitles=${subtitlesPath}:force_style='FontName=Arial,FontSize=28,PrimaryColour=&H00FFFFFF,BackColour=&H80000000,Shadow=2,Outline=0,MarginV=40'`
+      : null;
+
     await new Promise((resolve, reject) => {
-      const ffmpeg = spawn('ffmpeg', [
+      const ffmpegArgs = [
         '-i', videoPath,
         '-i', audioPath,
         '-filter_complex',
         '[0:a]volume=0.4[vid_a];[1:a]volume=1.5[rec_a];[vid_a][rec_a]amerge=inputs=2,pan=stereo|c0<c0+c2|c1<c1+c2[a_out]',
         '-map', '0:v',
         '-map', '[a_out]',
-        '-c:v', 'copy',
+        ...(subtitleStyle ? ['-vf', subtitleStyle, '-c:v', 'libx264', '-preset', 'fast', '-crf', '23'] : ['-c:v', 'copy']),
         '-c:a', 'aac',
         '-b:a', '192k',
         '-shortest',
         '-y',
         outputPath
-      ]);
+      ];
+
+      const ffmpeg = spawn('ffmpeg', ffmpegArgs);
 
       ffmpeg.stderr.on('data', (data) => {
         console.log(`FFmpeg: ${data}`);
@@ -137,7 +158,7 @@ app.post('/merge-video', async (req, res) => {
     if (oldVideoUrl) await deleteGcsFileByUrl(bucket, oldVideoUrl);
 
     // Cleanup temp files
-    [videoPath, audioPath, outputPath].forEach(p => {
+    [videoPath, audioPath, subtitlesPath, outputPath].forEach(p => {
       try { fs.unlinkSync(p); } catch (e) {}
     });
 
