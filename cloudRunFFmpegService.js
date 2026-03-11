@@ -102,7 +102,7 @@ app.post('/merge-video', async (req, res) => {
 
     // Subtitle style (matching Preview appearance)
     const subtitleStyle = subtitlesUrl
-      ? `subtitles=${subtitlesPath}:force_style='FontName=Arial,FontSize=28,PrimaryColour=&H00FFFFFF,BackColour=&H80000000,Shadow=2,Outline=0,MarginV=40'`
+      ? `subtitles=${subtitlesPath}:force_style='FontName=Arial,FontSize=16,PrimaryColour=&H00FFFFFF,BackColour=&H80000000,Shadow=2,Outline=0,MarginV=40'`
       : null;
 
     await new Promise((resolve, reject) => {
