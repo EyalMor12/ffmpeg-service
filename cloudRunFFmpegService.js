@@ -96,6 +96,18 @@ app.post('/merge-video', async (req, res) => {
           .on('error', reject);
       });
       console.log('Subtitles downloaded:', subtitlesPath);
+
+      // Add RLM (Right-to-Left Mark) to each subtitle text line for proper Hebrew RTL in libass
+      const RLM = '\u200F';
+      const srtRaw = fs.readFileSync(subtitlesPath, 'utf-8');
+      const srtFixed = srtRaw.replace(/^(.+)$/gm, (line) => {
+        if (line.trim() === '') return line;
+        if (/^\d+$/.test(line.trim())) return line; // index number
+        if (/^\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}$/.test(line.trim())) return line; // timestamp
+        return RLM + line; // subtitle text → prepend RLM
+      });
+      fs.writeFileSync(subtitlesPath, srtFixed, 'utf-8');
+      console.log('Subtitles RTL markers applied');
     }
 
     console.log('Files downloaded, starting FFmpeg merge...');
