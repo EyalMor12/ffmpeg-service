@@ -272,7 +272,7 @@ app.post('/concat-clips', async (req, res) => {
     return res.status(400).json({ error: 'Missing required parameters' });
   }
 
-  const slideSeconds = parseInt(slideDuration || 2, 10) || 2;
+  const slideSeconds = slideDuration !== undefined && slideDuration !== null ? parseInt(slideDuration, 10) : 2;
 
   // Respond immediately
   res.json({ success: true, status: 'processing', playlistId });
@@ -352,11 +352,13 @@ app.post('/concat-clips', async (req, res) => {
       await createBlankSlide(introSlidePath, introDuration, 'intro');
     }
 
-    // Only create separator slides if slideSeconds > 0
-    if (slideSeconds > 0) {
+    // Only create separator slides if we have separator URLs (slideImageUrls[1] onwards)
+    // slideImageUrls[0] = intro, slideImageUrls[1..n] = separators
+    const hasSeparators = slideImageUrls && slideImageUrls.length > 1;
+    if (hasSeparators && slideSeconds > 0) {
       for (let i = 0; i < clipUrls.length; i++) {
         const sepPath = path.join(tempDir, `slide_sep_${playlistId}_${i}.mp4`);
-        const imgUrl = slideImageUrls && slideImageUrls[i + 1];
+        const imgUrl = slideImageUrls[i + 1]; // slideImageUrls[1] = first separator
         if (imgUrl) {
           await createSlideFromImage(imgUrl, sepPath, slideSeconds, `sep_${i}`);
         } else {
@@ -366,7 +368,7 @@ app.post('/concat-clips', async (req, res) => {
       }
       console.log('Intro + separator slides created, building concat list...');
     } else {
-      console.log('[concat-clips] Intro slide created, skipping separators (slideSeconds=0)...');
+      console.log('[concat-clips] Intro slide created, skipping separators (no separator images or slideSeconds=0)...');
     }
 
     // Build ordered list: intro + (separator + clip) for each clip, or just clips if no slides
