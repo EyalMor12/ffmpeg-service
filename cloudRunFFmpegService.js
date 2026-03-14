@@ -340,31 +340,39 @@ app.post('/concat-clips', async (req, res) => {
 
     // Create slides from pre-rendered PNGs (slideImageUrls[0] = intro, [1..n] = separators)
     console.log('[concat-clips] Creating slides from pre-rendered images...');
-    const introSlidePath = path.join(tempDir, `slide_intro_${playlistId}.mp4`);
-    if (slideImageUrls && slideImageUrls[0]) {
-      await createSlideFromImage(slideImageUrls[0], introSlidePath, slideSeconds, 'intro');
-    } else {
-      await createBlankSlide(introSlidePath, slideSeconds, 'intro');
-    }
-
+    let introSlidePath = null;
     const separatorPaths = [];
-    for (let i = 0; i < clipUrls.length; i++) {
-      const sepPath = path.join(tempDir, `slide_sep_${playlistId}_${i}.mp4`);
-      const imgUrl = slideImageUrls && slideImageUrls[i + 1];
-      if (imgUrl) {
-        await createSlideFromImage(imgUrl, sepPath, slideSeconds, `sep_${i}`);
-      } else {
-        await createBlankSlide(sepPath, slideSeconds, `sep_${i}`);
-      }
-      separatorPaths.push(sepPath);
+
+    // ALWAYS create intro slide (3 seconds)
+    introSlidePath = path.join(tempDir, `slide_intro_${playlistId}.mp4`);
+    if (slideImageUrls && slideImageUrls[0]) {
+      await createSlideFromImage(slideImageUrls[0], introSlidePath, 3, 'intro');
+    } else {
+      await createBlankSlide(introSlidePath, 3, 'intro');
     }
 
-    console.log('All slides created, building concat list...');
+    // Only create separator slides if slideSeconds > 0
+    if (slideSeconds > 0) {
+      for (let i = 0; i < clipUrls.length; i++) {
+        const sepPath = path.join(tempDir, `slide_sep_${playlistId}_${i}.mp4`);
+        const imgUrl = slideImageUrls && slideImageUrls[i + 1];
+        if (imgUrl) {
+          await createSlideFromImage(imgUrl, sepPath, slideSeconds, `sep_${i}`);
+        } else {
+          await createBlankSlide(sepPath, slideSeconds, `sep_${i}`);
+        }
+        separatorPaths.push(sepPath);
+      }
+      console.log('Intro + separator slides created, building concat list...');
+    } else {
+      console.log('[concat-clips] Intro slide created, skipping separators (slideSeconds=0)...');
+    }
 
-    // Build ordered list: intro + (separator + clip) for each clip
-    const allSegments = [introSlidePath];
+    // Build ordered list: intro + (separator + clip) for each clip, or just clips if no slides
+    const allSegments = [];
+    if (introSlidePath) allSegments.push(introSlidePath);
     for (let i = 0; i < reEncodedPaths.length; i++) {
-      allSegments.push(separatorPaths[i]);
+      if (separatorPaths[i]) allSegments.push(separatorPaths[i]);
       allSegments.push(reEncodedPaths[i]);
     }
 
