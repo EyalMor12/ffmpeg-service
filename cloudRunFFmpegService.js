@@ -114,7 +114,7 @@ app.post('/merge-video', async (req, res) => {
 
     // Subtitle style (matching Preview appearance)
     const subtitleStyle = subtitlesUrl
-      ? `subtitles=${subtitlesPath}:force_style='FontName=DejaVu Sans,FontSize=18,PrimaryColour=&H00FFFFFF,BackColour=&H80000000,Shadow=2,Outline=0,MarginV=40'`
+      ? `subtitles=${subtitlesPath}:force_style='FontName=DejaVu Sans,FontSize=18,PrimaryColour=&H00000000,BackColour=&H00000000,Shadow=1,Outline=0,MarginV=40'`
       : null;
 
     await new Promise((resolve, reject) => {
@@ -122,7 +122,7 @@ app.post('/merge-video', async (req, res) => {
         '-i', videoPath,
         '-i', audioPath,
         '-filter_complex',
-        '[0:a]volume=0.4[vid_a];[1:a]volume=1.5[rec_a];[vid_a][rec_a]amerge=inputs=2,pan=stereo|c0<c0+c2|c1<c1+c2[a_out]',
+        '[0:a]volume=0.8[vid_a];[1:a]volume=1.5[rec_a];[vid_a][rec_a]amerge=inputs=2,pan=stereo|c0<c0+c2|c1<c1+c2[a_out]',
         '-map', '0:v',
         '-map', '[a_out]',
         ...(subtitleStyle ? ['-vf', subtitleStyle, '-c:v', 'libx264', '-preset', 'fast', '-crf', '23'] : ['-c:v', 'copy']),
