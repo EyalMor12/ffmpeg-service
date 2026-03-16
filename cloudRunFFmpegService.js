@@ -1,4 +1,3 @@
-// This file is meant to run INSIDE the Railway container (not in Base44/Deno Deploy)
 // Deploy this as a standalone Node.js service on Railway with FFmpeg installed
 
 const express = require('express');
@@ -114,7 +113,7 @@ app.post('/merge-video', async (req, res) => {
 
     // Subtitle style (matching Preview appearance)
     const subtitleStyle = subtitlesUrl
-      ? `subtitles=${subtitlesPath}:force_style='FontName=DejaVu Sans,FontSize=18,PrimaryColour=&H00000000,BackColour=&H00000000,Shadow=1,Outline=0,MarginV=40'`
+      ? `subtitles=${subtitlesPath}:force_style='FontName=Arial,FontSize=18,PrimaryColour=&HFFFFFF,BackColour=&H80000000,Shadow=2,Outline=1,MarginV=40'`
       : null;
 
     await new Promise((resolve, reject) => {
