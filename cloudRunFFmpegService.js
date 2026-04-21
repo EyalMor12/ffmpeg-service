@@ -1,3 +1,4 @@
+// This file is meant to run INSIDE the Railway container (not in Base44/Deno Deploy)
 // Deploy this as a standalone Node.js service on Railway with FFmpeg installed
 
 const express = require('express');
@@ -46,11 +47,25 @@ async function deleteGcsFileByUrl(bucket, publicUrl) {
 }
 
 app.post('/merge-video', async (req, res) => {
-  const { videoUrl, audioUrl, playlistId, bucketName, callbackUrl, oldVideoUrl, subtitlesUrl } = req.body;
+  const { videoUrl, audioUrl, playlistId, bucketName, callbackUrl, oldVideoUrl, subtitlesUrl, freezeSegments } = req.body;
 
   if (!videoUrl || !audioUrl || !playlistId || !bucketName) {
     return res.status(400).json({ error: 'Missing required parameters' });
   }
+
+  // ---- FREEZE BRANCH: separate path when freeze segments exist ----
+  if (freezeSegments && freezeSegments.length > 0) {
+    console.log(`[merge-video] FREEZE BRANCH — ${freezeSegments.length} segment(s) for playlist ${playlistId}`);
+    res.json({ success: true, status: 'processing', playlistId, mode: 'freeze' });
+
+    setImmediate(() => processFreezeAudioWithVideo({
+      videoUrl, audioUrl, subtitlesUrl, freezeSegments,
+      playlistId, bucketName, callbackUrl, oldVideoUrl
+    }).catch(err => console.error('[FREEZE] processFreezeAudioWithVideo failed:', err)));
+
+    return;
+  }
+  // ---- END FREEZE BRANCH ----
 
   // Respond immediately so Railway doesn't timeout the HTTP request
   res.json({ success: true, status: 'processing', playlistId });
@@ -113,7 +128,7 @@ app.post('/merge-video', async (req, res) => {
 
     // Subtitle style (matching Preview appearance)
     const subtitleStyle = subtitlesUrl
-      ? `subtitles=${subtitlesPath}:force_style='FontName=Arial,FontSize=18,PrimaryColour=&HFFFFFF,BackColour=&H80000000,Shadow=2,Outline=1,MarginV=40'`
+      ? `subtitles=${subtitlesPath}:force_style='FontName=DejaVu Sans,FontSize=18,PrimaryColour=&H00000000,BackColour=&H00000000,Shadow=1,Outline=0,MarginV=40'`
       : null;
 
     await new Promise((resolve, reject) => {
@@ -441,6 +456,181 @@ app.post('/concat-clips', async (req, res) => {
     try { fs.unlinkSync(outputPath); } catch (e) {}
   }
 });
+
+// ============================================================
+// FREEZE AUDIO WITH VIDEO — experimental branch
+// Builds a new video where audio drives freeze/resume of video.
+// Each freeze segment pauses the video at a specific frame while
+// audio continues, then resumes. The output is a single MP4.
+// ============================================================
+async function processFreezeAudioWithVideo({ videoUrl, audioUrl, subtitlesUrl, freezeSegments, playlistId, bucketName, callbackUrl, oldVideoUrl }) {
+  const tempDir = '/tmp';
+  const videoPath = path.join(tempDir, `fvideo_${playlistId}.mp4`);
+  const audioPath = path.join(tempDir, `faudio_${playlistId}.m4a`);
+  const subtitlesPath = path.join(tempDir, `fsubtitles_${playlistId}.srt`);
+  const outputPath = path.join(tempDir, `fmerged_${playlistId}.mp4`);
+  const segListPath = path.join(tempDir, `fseglist_${playlistId}.txt`);
+  const segPaths = [];
+
+  try {
+    console.log(`[FREEZE] Downloading video and audio for ${playlistId}...`);
+    const [videoRes, audioRes] = await Promise.all([
+      axios.get(videoUrl, { responseType: 'stream' }),
+      axios.get(audioUrl, { responseType: 'stream' })
+    ]);
+
+    await new Promise((resolve, reject) => videoRes.data.pipe(fs.createWriteStream(videoPath)).on('finish', resolve).on('error', reject));
+    await new Promise((resolve, reject) => audioRes.data.pipe(fs.createWriteStream(audioPath)).on('finish', resolve).on('error', reject));
+
+    // Probe video duration
+    const videoDuration = await getClipDuration(videoPath);
+    console.log(`[FREEZE] Video duration: ${videoDuration}s, freeze segments:`, JSON.stringify(freezeSegments));
+
+    // Build a timeline of (video_start, video_end, freeze_duration) segments.
+    // Segments are sorted by videoTime ascending.
+    const sorted = [...freezeSegments].sort((a, b) => a.videoTime - b.videoTime);
+
+    // We'll produce a list of video segments: normal playback + frozen still images.
+    // Strategy: re-encode the video in sections, inserting freeze stills where needed,
+    // then concat everything and merge with the original audio track.
+
+    let videoPos = 0; // current position in the source video
+    let segIdx = 0;
+
+    for (let i = 0; i < sorted.length; i++) {
+      const seg = sorted[i];
+      const freezeAt = seg.videoTime;
+      const freezeDur = seg.audioDuration;
+
+      // 1. Normal playback segment from videoPos → freezeAt
+      if (freezeAt > videoPos + 0.05) {
+        const normalPath = path.join(tempDir, `fseg_normal_${playlistId}_${segIdx}.mp4`);
+        const duration = freezeAt - videoPos;
+        await runFFmpeg([
+          '-ss', String(videoPos),
+          '-i', videoPath,
+          '-t', String(duration),
+          '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+          '-c:a', 'aac', '-b:a', '128k',
+          '-y', normalPath
+        ], `normal-seg-${segIdx}`);
+        segPaths.push(normalPath);
+        segIdx++;
+      }
+
+      // 2. Frozen still: extract one frame at freezeAt, loop it for freezeDur
+      const stillPath = path.join(tempDir, `fseg_still_${playlistId}_${segIdx}.mp4`);
+      await runFFmpeg([
+        '-ss', String(freezeAt),
+        '-i', videoPath,
+        '-vframes', '1',
+        '-loop', '1',
+        '-t', String(freezeDur),
+        '-f', 'lavfi', '-i', `anullsrc=channel_layout=stereo:sample_rate=44100`,
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
+        '-vf', 'format=yuv420p',
+        '-c:a', 'aac', '-b:a', '128k',
+        '-shortest',
+        '-y', stillPath
+      ], `still-seg-${segIdx}`);
+      segPaths.push(stillPath);
+      segIdx++;
+
+      videoPos = freezeAt; // after freeze, video resumes from the same point
+    }
+
+    // 3. Remaining video after last freeze
+    if (videoPos < videoDuration - 0.05) {
+      const tailPath = path.join(tempDir, `fseg_tail_${playlistId}_${segIdx}.mp4`);
+      await runFFmpeg([
+        '-ss', String(videoPos),
+        '-i', videoPath,
+        '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+        '-c:a', 'aac', '-b:a', '128k',
+        '-y', tailPath
+      ], `tail-seg-${segIdx}`);
+      segPaths.push(tailPath);
+    }
+
+    // 4. Concat all segments into one silent video
+    const concatContent = segPaths.map(p => `file '${p}'`).join('\n');
+    fs.writeFileSync(segListPath, concatContent);
+    const concatPath = path.join(tempDir, `fconcat_${playlistId}.mp4`);
+
+    await runFFmpeg([
+      '-f', 'concat', '-safe', '0',
+      '-i', segListPath,
+      '-c', 'copy',
+      '-y', concatPath
+    ], 'concat-freeze-segs');
+
+    // 5. Optional: apply RTL subtitles
+    if (subtitlesUrl) {
+      const subtRes = await axios.get(subtitlesUrl, { responseType: 'text' });
+      const RLM = '\u200F';
+      const srtFixed = subtRes.data.replace(/^(.+)$/gm, (line) => {
+        if (line.trim() === '' || /^\d+$/.test(line.trim()) || /^\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}$/.test(line.trim())) return line;
+        return RLM + line;
+      });
+      fs.writeFileSync(subtitlesPath, srtFixed, 'utf-8');
+    }
+
+    // 6. Merge the rebuilt video with the original audio (replace video's audio)
+    const subtitleStyle = subtitlesUrl
+      ? `subtitles=${subtitlesPath}:force_style='FontName=DejaVu Sans,FontSize=18,PrimaryColour=&H00000000,Shadow=1,Outline=0,MarginV=40'`
+      : null;
+
+    await runFFmpeg([
+      '-i', concatPath,
+      '-i', audioPath,
+      '-filter_complex', '[0:a]volume=0.0[vid_a];[1:a]volume=1.5[rec_a];[vid_a][rec_a]amerge=inputs=2,pan=stereo|c0<c0+c2|c1<c1+c2[a_out]',
+      '-map', '0:v',
+      '-map', '[a_out]',
+      ...(subtitleStyle ? ['-vf', subtitleStyle, '-c:v', 'libx264', '-preset', 'fast', '-crf', '23'] : ['-c:v', 'copy']),
+      '-c:a', 'aac', '-b:a', '192k',
+      '-shortest',
+      '-y', outputPath
+    ], 'final-merge');
+
+    // 7. Upload to GCS
+    const bucket = storage.bucket(bucketName);
+    const timestamp = Date.now();
+    const gcsFileName = `playlists/${playlistId}/freeze_merged_${timestamp}.mp4`;
+    const file = bucket.file(gcsFileName);
+    await file.save(fs.readFileSync(outputPath), { metadata: { contentType: 'video/mp4' } });
+
+    const publicUrl = `https://storage.googleapis.com/${bucketName}/${gcsFileName}`;
+    console.log('[FREEZE] Upload complete:', publicUrl);
+
+    if (oldVideoUrl) await deleteGcsFileByUrl(bucket, oldVideoUrl);
+
+    // 8. Cleanup
+    [...segPaths, segListPath, concatPath, videoPath, audioPath, outputPath].forEach(p => { try { fs.unlinkSync(p); } catch (e) {} });
+    if (subtitlesUrl) { try { fs.unlinkSync(subtitlesPath); } catch (e) {} }
+
+    // 9. Callback
+    if (callbackUrl) {
+      await axios.post(callbackUrl, { playlistId, isCallback: true, mergedVideoUrl: publicUrl });
+      console.log('[FREEZE] Callback notified');
+    }
+
+  } catch (err) {
+    console.error('[FREEZE] processFreezeAudioWithVideo error:', err);
+    segPaths.forEach(p => { try { fs.unlinkSync(p); } catch (e) {} });
+    [videoPath, audioPath, outputPath, segListPath].forEach(p => { try { fs.unlinkSync(p); } catch (e) {} });
+  }
+}
+
+// Helper: run ffmpeg with args, returns promise
+function runFFmpeg(args, label) {
+  return new Promise((resolve, reject) => {
+    console.log(`[FREEZE][${label}] ffmpeg`, args.join(' '));
+    const ff = spawn('ffmpeg', args);
+    ff.stderr.on('data', d => console.log(`[FREEZE][${label}] ${d}`));
+    ff.on('close', code => code === 0 ? resolve() : reject(new Error(`ffmpeg [${label}] exited with code ${code}`)));
+    ff.on('error', reject);
+  });
+}
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
