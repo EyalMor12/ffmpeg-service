@@ -518,21 +518,28 @@ async function processFreezeAudioWithVideo({ videoUrl, audioUrl, subtitlesUrl, f
         segIdx++;
       }
 
-      // 2. Frozen still: extract one frame at freezeAt, loop it for freezeDur
+      // 2. Frozen still: שלב א' — חילוץ frame יחיד כ-PNG
+      const stillPngPath = path.join(tempDir, `fseg_still_${playlistId}_${segIdx}.png`);
       const stillPath = path.join(tempDir, `fseg_still_${playlistId}_${segIdx}.mp4`);
       await runFFmpeg([
         '-ss', String(freezeAt),
         '-i', videoPath,
         '-vframes', '1',
+        '-y', stillPngPath
+      ], `still-extract-${segIdx}`);
+      // שלב ב' — לולאת ה-PNG לאורך freezeDur שניות עם שקט
+      await runFFmpeg([
         '-loop', '1',
-        '-t', String(freezeDur),
+        '-i', stillPngPath,
         '-f', 'lavfi', '-i', `anullsrc=channel_layout=stereo:sample_rate=44100`,
         '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
-        '-vf', 'format=yuv420p',
+        '-vf', 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,format=yuv420p',
         '-c:a', 'aac', '-b:a', '128k',
+        '-t', String(freezeDur),
         '-shortest',
         '-y', stillPath
-      ], `still-seg-${segIdx}`);
+      ], `still-loop-${segIdx}`);
+      try { fs.unlinkSync(stillPngPath); } catch (e) {}
       segPaths.push(stillPath);
       segIdx++;
 
