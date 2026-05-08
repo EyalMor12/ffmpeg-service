@@ -582,16 +582,17 @@ async function processFreezeAudioWithVideo({ videoUrl, audioUrl, subtitlesUrl, f
       fs.writeFileSync(subtitlesPath, srtFixed, 'utf-8');
     }
 
-    // 6. Merge the rebuilt video with the original audio (replace video's audio)
+    // 6. Merge the rebuilt video with the original audio (mix original + recorded)
     const subtitleStyle = subtitlesUrl
-      ? `subtitles=${subtitlesPath}:force_style='FontName=DejaVu Sans,FontSize=18,PrimaryColour=&H00000000,Shadow=1,Outline=0,MarginV=40'`
+      ? `subtitles=${subtitlesPath}:force_style='FontName=DejaVu Sans,FontSize=18,PrimaryColour=&H00000000,BackColour=&H00000000,Shadow=1,Outline=0,MarginV=40'`
       : null;
 
     await runFFmpeg([
       '-i', concatPath,
       '-i', audioPath,
+      '-filter_complex', '[0:a]volume=0.8[vid_a];[1:a]volume=1.5[rec_a];[vid_a][rec_a]amerge=inputs=2,pan=stereo|c0<c0+c2|c1<c1+c2[a_out]',
       '-map', '0:v',
-      '-map', '1:a',
+      '-map', '[a_out]',
       ...(subtitleStyle ? ['-vf', subtitleStyle, '-c:v', 'libx264', '-preset', 'fast', '-crf', '23'] : ['-c:v', 'copy']),
       '-c:a', 'aac', '-b:a', '192k',
       '-shortest',
