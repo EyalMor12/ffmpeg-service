@@ -128,7 +128,7 @@ app.post('/merge-video', async (req, res) => {
 
     // Subtitle style (matching Preview appearance)
     const subtitleStyle = subtitlesUrl
-      ? `subtitles=${subtitlesPath}:force_style='FontName=DejaVu Sans,FontSize=18,PrimaryColour=&H00FFFFFF,BackColour=&H80000000,Shadow=1,Outline=0,MarginV=40'`
+      ? `subtitles=${subtitlesPath}:force_style='FontName=DejaVu Sans,FontSize=18,PrimaryColour=&H00FFFFFF,BackColour=&H80000000,BorderStyle=3,Outline=1,Shadow=0,MarginV=40'`
       : null;
 
     await new Promise((resolve, reject) => {
@@ -584,7 +584,7 @@ async function processFreezeAudioWithVideo({ videoUrl, audioUrl, subtitlesUrl, f
 
     // 6. Merge the rebuilt video with the original audio (mix original + recorded)
     const subtitleStyle = subtitlesUrl
-      ? `subtitles=${subtitlesPath}:force_style='FontName=DejaVu Sans,FontSize=18,PrimaryColour=&H00FFFFFF,BackColour=&H80000000,Shadow=1,Outline=0,MarginV=40'`
+      ? `subtitles=${subtitlesPath}:force_style='FontName=DejaVu Sans,FontSize=18,PrimaryColour=&H00FFFFFF,BackColour=&H80000000,BorderStyle=3,Outline=1,Shadow=0,MarginV=40'`
       : null;
 
     await runFFmpeg([
