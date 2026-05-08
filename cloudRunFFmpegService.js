@@ -590,7 +590,7 @@ async function processFreezeAudioWithVideo({ videoUrl, audioUrl, subtitlesUrl, f
     await runFFmpeg([
       '-i', concatPath,
       '-i', audioPath,
-      '-filter_complex', '[0:a]volume=0.0[vid_a];[1:a]volume=1.5[rec_a];[vid_a][rec_a]amerge=inputs=2,pan=stereo|c0<c0+c2|c1<c1+c2[a_out]',
+      '-filter_complex', '[0:a]volume=0.8[vid_a];[1:a]volume=1.5[rec_a];[vid_a][rec_a]amerge=inputs=2,pan=stereo|c0<c0+c2|c1<c1+c2[a_out]',
       '-map', '0:v',
       '-map', '[a_out]',
       ...(subtitleStyle ? ['-vf', subtitleStyle, '-c:v', 'libx264', '-preset', 'fast', '-crf', '23'] : ['-c:v', 'copy']),
