@@ -1,5 +1,7 @@
-// This file is meant to run INSIDE the Railway container (not in Base44/Deno Deploy)
-// Deploy this as a standalone Node.js service on Railway with FFmpeg installed
+/* eslint-disable no-undef */
+// This file is meant to run INSIDE the Railway/Cloud Run container (not in Base44/Deno Deploy)
+// Deploy this as a standalone Node.js service on Railway/Cloud Run with FFmpeg installed
+// COPY THIS ENTIRE FILE CONTENT TO YOUR GITHUB REPO
 
 const express = require('express');
 const { spawn } = require('child_process');
@@ -237,6 +239,48 @@ async function createSlideFromImage(imageUrl, outputPath, durationSecs, slideInd
   });
 }
 
+// Create intro slide with sponsor video in bottom half (50/50 split)
+async function createIntroWithSponsorVideo(introImageUrl, sponsorVideoUrl, outputPath, durationSecs) {
+  const introImagePath = outputPath.replace('.mp4', '.png');
+  const sponsorPath = outputPath.replace('.mp4', '_sponsor.mp4');
+
+  // Download intro image (top half has text, bottom half is black)
+  const introRes = await axios.get(introImageUrl, { responseType: 'arraybuffer' });
+  fs.writeFileSync(introImagePath, Buffer.from(introRes.data));
+
+  // Download sponsor video
+  const sponsorRes = await axios.get(sponsorVideoUrl, { responseType: 'stream' });
+  await new Promise((resolve, reject) => {
+    sponsorRes.data.pipe(fs.createWriteStream(sponsorPath))
+      .on('finish', resolve)
+      .on('error', reject);
+  });
+
+  return new Promise((resolve, reject) => {
+    // Composite: top half = intro image (cropped to 1920x540), bottom half = sponsor video (scaled to 1920x540)
+    const ff = spawn('ffmpeg', [
+      '-loop', '1', '-i', introImagePath,
+      '-stream_loop', '-1', '-i', sponsorPath,
+      '-filter_complex',
+      '[0:v]crop=1920:540:0:0[top];[1:v]scale=1920:540:force_original_aspect_ratio=decrease,pad=1920:540:(ow-iw)/2:(oh-ih)/2,setsar=1[bottom];[top][bottom]vstack=inputs=2,format=yuv420p[v]',
+      '-map', '[v]',
+      '-t', String(durationSecs),
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
+      '-r', '30',
+      '-an',
+      '-y', outputPath
+    ]);
+    ff.stderr.on('data', d => console.log(`[intro-sponsor] FFmpeg: ${d}`));
+    ff.on('close', code => {
+      try { fs.unlinkSync(introImagePath); } catch (e) {}
+      try { fs.unlinkSync(sponsorPath); } catch (e) {}
+      if (code === 0) resolve();
+      else reject(new Error(`FFmpeg intro+sponsor exited with code ${code}`));
+    });
+    ff.on('error', reject);
+  });
+}
+
 // Fallback: blank black slide (no image provided)
 async function createBlankSlide(outputPath, durationSecs, slideIndex) {
   return new Promise((resolve, reject) => {
@@ -280,7 +324,7 @@ function getClipDuration(filePath) {
 
 // Concatenate multiple clips into a single video, with intro and separators
 app.post('/concat-clips', async (req, res) => {
-  const { clipUrls, clipDurations, playlistId, playlistName, bucketName, callbackUrl, slideDuration, slideImageUrls, oldVideoUrl } = req.body;
+  const { clipUrls, clipDurations, playlistId, playlistName, bucketName, callbackUrl, slideDuration, slideImageUrls, sponsorVideoUrl, oldVideoUrl } = req.body;
 
   if (!clipUrls || !clipUrls.length || !playlistId || !bucketName) {
     return res.status(400).json({ error: 'Missing required parameters' });
@@ -357,10 +401,12 @@ app.post('/concat-clips', async (req, res) => {
     let introSlidePath = null;
     const separatorPaths = [];
 
-    // ALWAYS create intro slide (duration based on slideSeconds: if 0, use 3 seconds)
-    const introDuration = slideSeconds > 0 ? slideSeconds : 3;
+    // ALWAYS create intro slide (always 6 seconds)
+    const introDuration = 6;
     introSlidePath = path.join(tempDir, `slide_intro_${playlistId}.mp4`);
-    if (slideImageUrls && slideImageUrls[0]) {
+    if (sponsorVideoUrl && slideImageUrls && slideImageUrls[0]) {
+      await createIntroWithSponsorVideo(slideImageUrls[0], sponsorVideoUrl, introSlidePath, introDuration);
+    } else if (slideImageUrls && slideImageUrls[0]) {
       await createSlideFromImage(slideImageUrls[0], introSlidePath, introDuration, 'intro');
     } else {
       await createBlankSlide(introSlidePath, introDuration, 'intro');
