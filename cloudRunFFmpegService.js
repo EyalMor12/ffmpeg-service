@@ -256,25 +256,49 @@ async function createIntroWithSponsorVideo(introImageUrl, sponsorVideoUrl, outpu
       .on('error', reject);
   });
 
+  // Check if sponsor video has an audio stream
+  const sponsorHasAudio = await hasAudioStream(sponsorPath);
+  console.log(`[intro-sponsor] Sponsor has audio: ${sponsorHasAudio}`);
+
   return new Promise((resolve, reject) => {
     // Composite: top half = intro image (cropped to 1920x540), bottom half = sponsor video (scaled to 1920x540)
-    // IMPORTANT: include a silent audio track (anullsrc) so concat with clips (which have audio) works.
-    // Without this, -an produces a file with no audio stream, and the concat drops ALL audio.
-    const ff = spawn('ffmpeg', [
-      '-loop', '1', '-i', introImagePath,
-      '-stream_loop', '-1', '-i', sponsorPath,
-      '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
+    // Audio: use sponsor's audio if present, otherwise silent track (anullsrc) so concat keeps audio consistent.
+    const preOutputArgs = [
       '-filter_complex',
       '[0:v]crop=1920:540:0:0[top];[1:v]scale=1920:540:force_original_aspect_ratio=decrease,pad=1920:540:(ow-iw)/2:(oh-ih)/2,setsar=1[bottom];[top][bottom]vstack=inputs=2,format=yuv420p[v]',
       '-map', '[v]',
-      '-map', '2:a',
       '-t', String(durationSecs),
       '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
       '-r', '30',
       '-c:a', 'aac', '-b:a', '128k',
-      '-shortest',
-      '-y', outputPath
-    ]);
+      '-ar', '44100',
+      '-ac', '2',
+      '-shortest'
+    ];
+
+    let ffArgs;
+    if (sponsorHasAudio) {
+      // Use sponsor's own audio
+      ffArgs = [
+        '-loop', '1', '-i', introImagePath,
+        '-stream_loop', '-1', '-i', sponsorPath,
+        ...preOutputArgs,
+        '-map', '1:a',
+        '-y', outputPath
+      ];
+    } else {
+      // No audio in sponsor — use silent track so concat stays consistent
+      ffArgs = [
+        '-loop', '1', '-i', introImagePath,
+        '-stream_loop', '-1', '-i', sponsorPath,
+        '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
+        ...preOutputArgs,
+        '-map', '2:a',
+        '-y', outputPath
+      ];
+    }
+
+    const ff = spawn('ffmpeg', ffArgs);
     ff.stderr.on('data', d => console.log(`[intro-sponsor] FFmpeg: ${d}`));
     ff.on('close', code => {
       try { fs.unlinkSync(introImagePath); } catch (e) {}
@@ -324,6 +348,30 @@ function getClipDuration(filePath) {
       } else reject(new Error(`ffprobe failed with code ${code}`));
     });
     ffprobe.on('error', reject);
+  });
+}
+
+// Check if a file has an audio stream using ffprobe
+function hasAudioStream(filePath) {
+  return new Promise((resolve) => {
+    const ffprobe = spawn('ffprobe', [
+      '-v', 'quiet',
+      '-print_format', 'json',
+      '-show_streams',
+      '-select_streams', 'a',
+      filePath
+    ]);
+    let output = '';
+    ffprobe.stdout.on('data', d => output += d);
+    ffprobe.on('close', code => {
+      if (code === 0) {
+        try {
+          const info = JSON.parse(output);
+          resolve(info.streams && info.streams.length > 0);
+        } catch (e) { resolve(false); }
+      } else resolve(false);
+    });
+    ffprobe.on('error', () => resolve(false));
   });
 }
 
