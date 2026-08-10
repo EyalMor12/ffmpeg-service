@@ -258,16 +258,21 @@ async function createIntroWithSponsorVideo(introImageUrl, sponsorVideoUrl, outpu
 
   return new Promise((resolve, reject) => {
     // Composite: top half = intro image (cropped to 1920x540), bottom half = sponsor video (scaled to 1920x540)
+    // IMPORTANT: include a silent audio track (anullsrc) so concat with clips (which have audio) works.
+    // Without this, -an produces a file with no audio stream, and the concat drops ALL audio.
     const ff = spawn('ffmpeg', [
       '-loop', '1', '-i', introImagePath,
       '-stream_loop', '-1', '-i', sponsorPath,
+      '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
       '-filter_complex',
       '[0:v]crop=1920:540:0:0[top];[1:v]scale=1920:540:force_original_aspect_ratio=decrease,pad=1920:540:(ow-iw)/2:(oh-ih)/2,setsar=1[bottom];[top][bottom]vstack=inputs=2,format=yuv420p[v]',
       '-map', '[v]',
+      '-map', '2:a',
       '-t', String(durationSecs),
       '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
       '-r', '30',
-      '-an',
+      '-c:a', 'aac', '-b:a', '128k',
+      '-shortest',
       '-y', outputPath
     ]);
     ff.stderr.on('data', d => console.log(`[intro-sponsor] FFmpeg: ${d}`));
